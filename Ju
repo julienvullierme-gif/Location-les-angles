@@ -1,0 +1,265 @@
+import React, { useEffect, useMemo, useState } from "react"; import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"; import { Button } from "@/components/ui/button"; import { Input } from "@/components/ui/input"; import { Textarea } from "@/components/ui/textarea"; import { Calendar as CalendarIcon, Check, Loader2, Settings, X } from "lucide-react"; import { format, addDays, eachDayOfInterval, isBefore, isAfter, isEqual, parseISO } from "date-fns"; import { fr } from "date-fns/locale";
+
+// --- Utilitaires Date --- const todayISO = () => new Date().toISOString().slice(0, 10); const toISO = (d) => d.toISOString().slice(0, 10);
+
+function daysBetween(start, end) { // nombre de nuits (end exclu) const s = new Date(start); const e = new Date(end); return Math.max(0, Math.round((e - s) / (1000 * 60 * 60 * 24))); }
+
+function rangeInclusive(start, endExcl) { if (!start || !endExcl) return []; const startDate = new Date(start); const endDate = new Date(endExcl); // on affiche jusqu'à la veille du départ return eachDayOfInterval({ start: startDate, end: addDays(endDate, -1) }).map(toISO); }
+
+// --- Parseur iCal minimal (sans récurrence) --- function parseICS(text) { const events = []; if (!text) return events; const lines = text.split(/\r?\n/); let current = null; for (const line of lines) { if (line.startsWith("BEGIN:VEVENT")) current = {}; else if (line.startsWith("END:VEVENT")) { if (current?.dtstart && current?.dtend) { events.push({ start: current.dtstart, end: current.dtend, summary: current.summary || "Occupé", }); } current = null; } else if (current) { if (line.startsWith("DTSTART")) { const m = line.match(/:(.)$/); if (m) current.dtstart = normalizeICalDate(m[1]); } else if (line.startsWith("DTEND")) { const m = line.match(/:(.)$/); if (m) current.dtend = normalizeICalDate(m[1]); } else if (line.startsWith("SUMMARY")) { const m = line.match(/:(.*)$/); if (m) current.summary = m[1]; } } } return events; }
+
+function normalizeICalDate(v) { // supporte formats AAAAMMJJ ou ISO if (/^\d{8}$/.test(v)) { const y = v.slice(0, 4), m = v.slice(4, 6), d = v.slice(6, 8); return ${y}-${m}-${d}; } // ex: 2025-08-01T00:00:00Z try { return toISO(new Date(v)); } catch { return v; } }
+
+// --- Composant Calendrier simplifié --- function AvailabilityCalendar({ bookedDates, checkIn, checkOut, onSelect }) { const [monthOffset, setMonthOffset] = useState(0); const base = new Date(); const viewDate = new Date(base.getFullYear(), base.getMonth() + monthOffset, 1);
+
+const days = useMemo(() => { const start = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1); const end = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0); const padStart = start.getDay() === 0 ? 6 : start.getDay() - 1; // Lundi=0 const padEnd = 6 - (end.getDay() === 0 ? 6 : end.getDay() - 1); const cells = [];
+
+// jours du mois précédent (padding)
+for (let i = 0; i < padStart; i++) cells.push(null);
+
+// jours du mois courant
+for (let d = 1; d <= end.getDate(); d++) {
+  const date = new Date(viewDate.getFullYear(), viewDate.getMonth(), d);
+  cells.push(date);
+}
+
+// padding fin
+for (let i = 0; i < padEnd; i++) cells.push(null);
+
+return cells;
+
+}, [viewDate]);
+
+const isBooked = (date) => bookedDates.has(toISO(date));
+
+function handleSelect(date) { if (!date || isBooked(date)) return; const iso = toISO(date);
+
+if (!checkIn || (checkIn && checkOut)) {
+  onSelect({ checkIn: iso, checkOut: null });
+  return;
+}
+// choisir checkOut après checkIn
+if (iso <= checkIn) {
+  onSelect({ checkIn: iso, checkOut: null });
+  return;
+}
+
+// vérifier si toutes les dates intermédiaires sont libres
+const path = eachDayOfInterval({ start: new Date(checkIn), end: addDays(new Date(iso), -1) });
+for (const d of path) if (bookedDates.has(toISO(d))) return; // segment occupé
+
+onSelect({ checkIn, checkOut: iso });
+
+}
+
+return ( <div className="w-full"> <div className="flex items-center justify-between mb-2"> <Button variant="outline" onClick={() => setMonthOffset((v) => v - 1)}>←</Button> <div className="font-semibold"> {format(viewDate, "LLLL yyyy", { locale: fr })} </div> <Button variant="outline" onClick={() => setMonthOffset((v) => v + 1)}>→</Button> </div> <div className="grid grid-cols-7 gap-1 text-center text-xs text-muted-foreground mb-1"> {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map((d) => ( <div key={d}>{d}</div> ))} </div> <div className="grid grid-cols-7 gap-1"> {days.map((date, idx) => { if (!date) return <div key={idx} className="h-10" />; const iso = toISO(date); const selected = (checkIn && iso === checkIn) || (checkOut && iso === checkOut); const between = checkIn && checkOut && iso > checkIn && iso < checkOut; const disabled = isBooked(date); return ( <button key={iso} onClick={() => handleSelect(date)} className={[ "h-10 rounded-2xl text-sm", disabled ? "bg-red-100 text-red-500 cursor-not-allowed line-through" : "bg-muted hover:bg-accent", selected ? "!bg-primary !text-primary-foreground" : "", between ? "!bg-primary/30" : "", ].join(" ")} > {date.getDate()} </button> ); })} </div> <div className="flex items-center gap-2 text-xs mt-3"> <span className="inline-block w-3 h-3 rounded bg-red-200" /> Occupé <span className="inline-block w-3 h-3 rounded bg-primary/30" /> Période sélectionnée </div> </div> ); }
+
+// --- Données de démo (à adapter) --- const INITIAL_LISTINGS = [ { id: "logement-a", name: "Logement A – Centre-ville", location: "Lyon, France", cover: "https://images.unsplash.com/photo-1505692794403-34d4982e01db?q=80&w=1600&auto=format&fit=crop", gallery: [ "https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1600&auto=format&fit=crop", "https://images.unsplash.com/photo-1505691723518-36a5ac3b2b8f?q=80&w=1600&auto=format&fit=crop", "https://images.unsplash.com/photo-1493809842364-78817add7ffb?q=80&w=1600&auto=format&fit=crop", ], capacity: 4, pricePerNight: 95, cleaningFee: 35, taxRate: 0.05, // 5 % taxe de séjour (exemple) stripeCheckoutUrl: "https://checkout.stripe.com/c/pay/cs_test_votre_lien", // à remplacer ical: { airbnb: "", // à coller booking: "", // à coller }, }, { id: "logement-b", name: "Logement B – Vue sur mer", location: "Nice, France", cover: "https://images.unsplash.com/photo-1505691723518-36a5ac3b2b8f?q=80&w=1600&auto=format&fit=crop", gallery: [ "https://images.unsplash.com/photo-1501183638710-841dd1904471?q=80&w=1600&auto=format&fit=crop", "https://images.unsplash.com/photo-1493809842364-78817add7ffb?q=80&w=1600&auto=format&fit=crop", "https://images.unsplash.com/photo-1505692794403-34d4982e01db?q=80&w=1600&auto=format&fit=crop", ], capacity: 2, pricePerNight: 120, cleaningFee: 40, taxRate: 0.06, stripeCheckoutUrl: "https://checkout.stripe.com/c/pay/cs_test_votre_lien2", ical: { airbnb: "", booking: "", }, }, ];
+
+// --- Stockage local des réglages --- const STORAGE_KEY = "ldv-config-v1"; function loadConfig() { try { const s = localStorage.getItem(STORAGE_KEY); if (!s) return null; return JSON.parse(s); } catch { return null; } } function saveConfig(cfg) { localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg)); }
+
+export default function SiteLocationCourteDuree() { const [listings, setListings] = useState(() => { const cfg = loadConfig(); if (cfg?.listings) return cfg.listings; return INITIAL_LISTINGS; }); const [current, setCurrent] = useState(listings[0].id); const active = listings.find((l) => l.id === current);
+
+const [loadingCalendars, setLoadingCalendars] = useState(false); const [bookedSet, setBookedSet] = useState(new Set()); const [selection, setSelection] = useState({ checkIn: null, checkOut: null });
+
+const [showSettings, setShowSettings] = useState(false);
+
+// Charger et fusionner les iCal à chaque changement de logement useEffect(() => { let cancelled = false; async function fetchCalendars() { setLoadingCalendars(true); try { const urls = [active.ical.airbnb, active.ical.booking].filter(Boolean); const allEvents = []; for (const url of urls) { try { const res = await fetch(url); const text = await res.text(); const evs = parseICS(text); allEvents.push(...evs); } catch (e) { console.warn("Erreur iCal", e); } } // convertir en set de dates occupées (chaque nuit du séjour) const booked = new Set(); for (const ev of allEvents) { const days = rangeInclusive(ev.start, ev.end); for (const d of days) booked.add(d); } if (!cancelled) setBookedSet(booked); } finally { if (!cancelled) setLoadingCalendars(false); } } fetchCalendars(); setSelection({ checkIn: null, checkOut: null }); return () => { cancelled = true; }; }, [current, active?.ical?.airbnb, active?.ical?.booking]);
+
+function handleReserve() { if (!selection.checkIn || !selection.checkOut) return; // Calcul total simple const nights = daysBetween(selection.checkIn, selection.checkOut); const base = nights * active.pricePerNight; const taxes = Math.round(base * active.taxRate * 100) / 100; const total = Math.round((base + taxes + active.cleaningFee) * 100) / 100;
+
+// Stocker la pré-réservation dans la query (facultatif)
+const params = new URLSearchParams({
+  listing: active.id,
+  checkIn: selection.checkIn,
+  checkOut: selection.checkOut,
+  nights: String(nights),
+  total: String(total),
+});
+
+// Redirection vers Stripe (à remplacer par votre Checkout Session générée côté serveur)
+if (active.stripeCheckoutUrl) {
+  window.location.href = `${active.stripeCheckoutUrl}?${params.toString()}`;
+} else {
+  alert("Aucun lien de paiement défini pour ce logement. Ajoutez-le dans le code ou via un paramètre.");
+}
+
+}
+
+// Sauvegarder les modifs de réglages function updateListing(id, patch) { setListings((prev) => { const next = prev.map((l) => (l.id === id ? { ...l, ...patch } : l)); saveConfig({ listings: next }); return next; }); }
+
+const nights = selection.checkIn && selection.checkOut ? daysBetween(selection.checkIn, selection.checkOut) : 0; const price = useMemo(() => { if (!nights) return { base: 0, taxes: 0, total: 0 }; const base = nights * active.pricePerNight; const taxes = Math.round(base * active.taxRate * 100) / 100; const total = Math.round((base + taxes + active.cleaningFee) * 100) / 100; return { base, taxes, total }; }, [nights, active]);
+
+return ( <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white"> <header className="sticky top-0 z-20 backdrop-blur bg-white/70 border-b"> <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between"> <div className="flex items-center gap-2"> <CalendarIcon className="w-6 h-6" /> <span className="font-bold text-lg">Séjours {new Date().getFullYear()}</span> </div> <div className="flex items-center gap-2"> <div className="hidden sm:flex gap-1"> {listings.map((l) => ( <Button key={l.id} variant={l.id === current ? "default" : "outline"} onClick={() => setCurrent(l.id)}> {l.name.split("–")[0].trim()} </Button> ))} </div> <Button variant="ghost" onClick={() => setShowSettings(true)}> <Settings className="w-5 h-5" /> </Button> </div> </div> </header>
+
+<main className="max-w-6xl mx-auto px-4 py-6 grid lg:grid-cols-3 gap-6">
+    {/* Colonne gauche : visuel + infos */}
+    <div className="lg:col-span-2 space-y-4">
+      <Card className="overflow-hidden">
+        <img src={active.cover} alt={active.name} className="w-full h-64 object-cover" />
+        <CardHeader>
+          <CardTitle className="text-2xl">{active.name}</CardTitle>
+          <div className="text-muted-foreground">{active.location} • Jusqu'à {active.capacity} voyageurs</div>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3">Appartement confortable, idéal pour les courts séjours. Proche des transports et des points d'intérêt. Politique d'annulation flexible (à personnaliser).</p>
+          <div className="grid grid-cols-3 gap-2">
+            {active.gallery.map((src, i) => (
+              <img key={i} src={src} className="h-32 w-full object-cover rounded-xl" />
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Disponibilités</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {loadingCalendars ? (
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Synchronisation des calendriers…
+            </div>
+          ) : (
+            <AvailabilityCalendar
+              bookedDates={bookedSet}
+              checkIn={selection.checkIn}
+              checkOut={selection.checkOut}
+              onSelect={(sel) => setSelection(sel)}
+            />
+          )}
+        </CardContent>
+      </Card>
+    </div>
+
+    {/* Colonne droite : réservation */}
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Réserver</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Arrivée</label>
+              <Input type="date" value={selection.checkIn || ""} min={todayISO()} onChange={(e) => setSelection((s) => ({ ...s, checkIn: e.target.value, checkOut: null }))} />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">Départ</label>
+              <Input type="date" value={selection.checkOut || ""} min={selection.checkIn || todayISO()} onChange={(e) => setSelection((s) => ({ ...s, checkOut: e.target.value }))} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Voyageurs</label>
+              <Input type="number" defaultValue={1} min={1} max={active.capacity} />
+            </div>
+            <div className="flex items-end">
+              <div className="text-sm text-muted-foreground">Capacité max: {active.capacity}</div>
+            </div>
+          </div>
+
+          <div className="rounded-2xl bg-slate-50 p-3 text-sm">
+            <div className="flex justify-between"><span>{active.pricePerNight}€ × {nights || 0} nuits</span><span>{price.base.toFixed(2)}€</span></div>
+            <div className="flex justify-between"><span>Frais de ménage</span><span>{active.cleaningFee.toFixed(2)}€</span></div>
+            <div className="flex justify-between"><span>Taxes ({Math.round(active.taxRate*100)}%)</span><span>{price.taxes.toFixed(2)}€</span></div>
+            <div className="border-t mt-2 pt-2 flex justify-between font-semibold"><span>Total</span><span>{price.total.toFixed(2)}€</span></div>
+          </div>
+
+          <Button className="w-full" disabled={!nights} onClick={handleReserve}>Payer et confirmer</Button>
+          {!nights && (
+            <div className="text-xs text-muted-foreground">Choisissez vos dates pour activer le paiement.</div>
+          )}
+          <div className="text-xs text-muted-foreground">Le paiement est sécurisé via Stripe. Vous recevrez un e‑mail de confirmation après validation.</div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Conditions</CardTitle>
+        </CardHeader>
+        <CardContent className="text-sm space-y-1">
+          <div>• Arrivée : 16:00 – 20:00</div>
+          <div>• Départ : avant 11:00</div>
+          <div>• Non-fumeur • Animaux sur demande • Pas de fête</div>
+          <div className="text-muted-foreground">Politique d'annulation à personnaliser selon votre besoin.</div>
+        </CardContent>
+      </Card>
+    </div>
+  </main>
+
+  {/* Panneau Paramètres */}
+  {showSettings && (
+    <div className="fixed inset-0 z-30 bg-black/40 flex items-end sm:items-center justify-center p-4" onClick={() => setShowSettings(false)}>
+      <div className="bg-white rounded-2xl w-full max-w-3xl p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="font-semibold flex items-center gap-2"><Settings className="w-4 h-4"/> Paramètres iCal & tarifs</div>
+          <Button variant="ghost" onClick={() => setShowSettings(false)}><X className="w-5 h-5"/></Button>
+        </div>
+        <div className="space-y-6 max-h-[70vh] overflow-auto pr-2">
+          {listings.map((l) => (
+            <Card key={l.id}>
+              <CardHeader>
+                <CardTitle className="text-base">{l.name}</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Airbnb iCal URL (.ics)</label>
+                    <Input placeholder="https://…/calendar.ics" value={l.ical.airbnb}
+                      onChange={(e) => updateListing(l.id, { ical: { ...l.ical, airbnb: e.target.value } })} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Booking iCal URL (.ics)</label>
+                    <Input placeholder="https://…/calendar.ics" value={l.ical.booking}
+                      onChange={(e) => updateListing(l.id, { ical: { ...l.ical, booking: e.target.value } })} />
+                  </div>
+                </div>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Prix / nuit (€)</label>
+                    <Input type="number" value={l.pricePerNight}
+                      onChange={(e) => updateListing(l.id, { pricePerNight: Number(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Ménage (€)</label>
+                    <Input type="number" value={l.cleaningFee}
+                      onChange={(e) => updateListing(l.id, { cleaningFee: Number(e.target.value) })} />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Taxes (%)</label>
+                    <Input type="number" value={Math.round(l.taxRate*100)}
+                      onChange={(e) => updateListing(l.id, { taxRate: Number(e.target.value)/100 })} />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Lien de paiement Stripe Checkout</label>
+                  <Input placeholder="https://checkout.stripe.com/c/pay/…" value={l.stripeCheckoutUrl}
+                    onChange={(e) => updateListing(l.id, { stripeCheckoutUrl: e.target.value })} />
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Photos (séparées par des retours à la ligne)</label>
+                  <Textarea rows={3} value={l.gallery.join("\n")}
+                    onChange={(e) => updateListing(l.id, { gallery: e.target.value.split(/\n+/).filter(Boolean) })} />
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2 mt-3">
+          <Button variant="outline" onClick={() => { localStorage.removeItem(STORAGE_KEY); window.location.reload(); }}>Réinitialiser</Button>
+          <Button onClick={() => setShowSettings(false)}><Check className="w-4 h-4 mr-1"/>Fermer</Button>
+        </div>
+      </div>
+    </div>
+  )}
+
+  <footer className="max-w-6xl mx-auto px-4 py-10 text-sm text-muted-foreground">
+    <div>© {new Date().getFullYear()} — Votre nom / micro-entreprise • SIRET • <a className="underline" href="#">Mentions légales</a> • <a className="underline" href="#">Politique de confidentialité</a></div>
+  </footer>
+</div>
+
+); }
+
